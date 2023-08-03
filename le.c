@@ -1,10 +1,36 @@
-/* Copyright (c) 2023, Arteen Abrishami. All rights reserved.
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: *
- * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
- * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- * All advertising materials mentioning features or use of this software must display the following acknowledgement: This product includes software developed by Arteen Abrishami.
- * Neither the name of Arteen Abrishami nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
- * THIS SOFTWARE IS PROVIDED BY ARTEEN ABRISHAMI AS IS AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
+/*
+ * Copyright (c) 2023, Arteen Abrishami. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * Redistributions of source code must retain the above copyright notice,
+ * this list of conditions and the following disclaimer.
+ *
+ * Redistributions in binary form must reproduce the above copyright notice,
+ * this list of conditions and the following disclaimer in the documentation
+ * and/or other materials provided with the distribution.
+ *        
+ * All advertising materials mentioning features or use of this software must
+ * display the following acknowledgement: This product includes software
+ * developed by Arteen Abrishami.
+ *
+ * Neither the name of Arteen Abrishami nor the names of its contributors may
+ * be used to endorse or promote products derived from this software without
+ * specific prior written permission.
+ *        
+ * THIS SOFTWARE IS PROVIDED BY ARTEEN ABRISHAMI AS IS AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
 
 /*  ================ INCLUDES  ================ */
 
@@ -21,7 +47,8 @@
 
 /* TODO:
  * catch SIGWINCH for window size
- * https://unix.stackexchange.com/questions/580362/how-are-terminal-information-such-as-window-size-sent-to-a-linux-program
+ * https://unix.stackexchange.com/questions/580362/how-are-terminal-
+ * information-such-as-window-size-sent-to-a-linux-program
  */
  
 /*  ================ DEFINES  ================ */
@@ -30,7 +57,8 @@
 
 /*  ================ screen management  ================ */
 
-/* https://stackoverflow.com/questions/39188508/how-curses-preserves-screen-contents */
+/* https://stackoverflow.com/questions/39188508/how-curses-preserves
+ * -screen-contents */
 #define ENABLE_ALT_SCREEN "\x1b[?1049h"
 #define DISABLE_ALT_SCREEN "\x1b[?1049l"
 #define ENABLE_ALT_SCREEN_SZ 8
@@ -524,7 +552,8 @@ editor_open(char *filename)
   while (
 		 (linelen = getline(&line, &linecap, fp)) != -1)
 	{
-	  // TODO: figure out display if last line doesn't have `\n`, just EOF (edge case)
+	  // TODO: figure out display if last line doesn't have `\n`,
+      // just EOF (edge case)
 	  while (linelen > 0
 			 && (line[linelen - 1] == '\n' ||
 				 line[linelen - 1] == '\r'))
@@ -647,9 +676,11 @@ editor_process_keystroke(void)
           {
             editor.cy = editor.row_offset + editor.window_rows - 1;
             if (editor.cy > editor.num_rows)
-              editor.cy = editor.num_rows; // one past the end, be careful with newlines at EOF
+            // one past the end, be careful with newlines at EOF              
+              editor.cy = editor.num_rows;
           }
-		int iterations = editor.window_rows - 4; // gain some idea of prev place
+        // gain some idea of prev place        
+		int iterations = editor.window_rows - 4;
 		while (iterations--)
 		  editor_move_cursor(c == SCROLL_UP ? PREV_LINE : NEXT_LINE);
 	  }
@@ -732,7 +763,8 @@ editor_draw_rows(struct abuf *ab)
 		}
 	  else
 		{
-		  // display starting a certain number of columns in -- horizontal scroll
+		  /* display starting a certain number of columns in --
+             horizontal scroll */
 		  int len = editor.row[filerow].rsize - editor.col_offset;
 		  // maybe they're on a longer line than ours, ours goes to 0
 		  if (len < 0)
@@ -792,7 +824,8 @@ editor_refresh_screen(void)
   
   char buf[32];
 
-  // subtract off row offset to position, since cy/rx references our position within the text file, not on the screen
+  /* subtract off row offset to position since
+  cy/rx references our position within the text file, not on the screen */
   int cursor_pos_y = editor.cy - editor.row_offset + 1;
   int cursor_pos_x = editor.rx - editor.col_offset + 1;
   snprintf(buf, sizeof(buf), MV_CURSOR_COORD_ARGS_YX, cursor_pos_y, cursor_pos_x);
