@@ -1,4 +1,4 @@
-CFLAGS := -std=c99 -Wall -Wextra -Wshadow -Wpedantic
+CFLAGS := -std=c2x -Wall -Wextra -Wshadow -Wpedantic
 
 le: le.c
 	$(CC) $(CFLAGS) le.c -o le

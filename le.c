@@ -29,11 +29,13 @@
  * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
  * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ */
 
 
 /*  ================ INCLUDES  ================ */
 
+/* https://www.gnu.org/software/libc/manual/html_node/Feature-Test-Macros.html
+ */
 #ifdef __linux__
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -48,13 +50,8 @@
 #include <sys/ioctl.h>
 #include <time.h>
 #include <stdarg.h>
+#include <signal.h>
 
-/* TODO:
- * catch SIGWINCH for window size
- * https://unix.stackexchange.com/questions/580362/how-are-terminal-
- * information-such-as-window-size-sent-to-a-linux-program
- */
- 
 /*  ================ DEFINES  ================ */
 
 #define LE_VERSION "0.0.1"
@@ -68,7 +65,8 @@
 #define ENABLE_ALT_SCREEN_SZ 8
 #define DISABLE_ALT_SCREEN_SZ 8
 /* from the obscure depths of the internet
- * https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking */
+ * https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking
+ */
 #define ENABLE_MOUSE_TRACKING "\x1b[?1000h"
 #define DISABLE_MOUSE_TRACKING "\x1b[?1000l"
 #define ENABLE_MOUSE_TRACKING_SZ 8
@@ -138,16 +136,19 @@
 
 #define TAB_STOP_SZ 4
 
+#define DIE_ERROR_FMT "%s: %s with message '%s'\n"
+#define DIE_MSG_FMT "%s: %s\n"
+
 /* ================ LOG (optional) ================ */
 
-// #define LOG
+#define LOG
 
 #ifdef LOG
 
 #include <fcntl.h>
 
 #define INIT_LOG(f) do {                                    \
-	int fd = open(f, O_CREAT | O_WRONLY | O_TRUNC);         \
+	int fd = open(f, O_CREAT | O_WRONLY | O_TRUNC, 0644);    \
 	if (fd == -1) exit(79);									\
 	fd = dup2(fd, STDERR_FILENO);							\
 	if (fd == -1) exit(79);									\
@@ -169,11 +170,15 @@
 	fprintf(stderr,"%s: %d\n", s, i);			\
   } while (0)
 
-#define WRITE_LOG_CHAR(s, c) do {									\
+#define WRITE_LOG_CHAR(c) do {									\
   if (iscntrl(c))													\
-	fprintf(stderr, "char: %d ('^%c')\r\n", c, c + 'A' - 1);		\
+	fprintf(stderr, "char: %d ('^%c')\n", c, c + 'A' - 1);          \
   else																\
-	fprintf(stderr, "char: %d ('%c')\r\n", c, c);					\
+	fprintf(stderr, "char: %d ('%c')\n", c, c);                     \
+  } while (0)
+
+#define WRITE_LOG_PTR(s, p) do {                  \
+    fprintf(stderr, "%s: %p\n", s, (void*) p);     \
   } while (0)
 
 #else
@@ -184,10 +189,13 @@
 #define WRITE_LOG_STR(s, l)
 #define WRITE_LOG_INT(s, i)
 #define WRITE_LOG_CHAR(s, c)
+#define WRITE_LOG_PTR(s, p)
 
 #endif
 
-/* ================ GLOBAL STRUCTS ================ */
+/* ================ GLOBALS ================ */
+
+/* ================ editor state ================ */
 
 struct editor_row
 {
@@ -195,16 +203,23 @@ struct editor_row
   int size;
   /* size of the rendered chars on screen */
   int rsize;
+  /* the actual chars */
   char *chars;
+  /* the rendered chars */
   char *render;
 };
 
 struct editor_state_struct
 {
+  /* restore upon exit */
   struct termios orig_termios;
+  /* a row in our editor */
   struct editor_row *row;
+  /* the filename we are responsible for */
   char *filename;
+  /* our status bar msg (bottom bar) */
   char status_msg[80];
+  /* keep track and remove it when necessary */
   time_t status_msg_time;
   /* how many rows do we have of text */
   int num_rows;
@@ -216,46 +231,54 @@ struct editor_state_struct
   /* cursor position -- within the chars field of the editor rows */
   int cx, cy;
   /* cursor position -- within the render field of editor rows,
-     adjusted for tabs and special chars, adjust for real cursor pos */
+     adjusted for tabs, adjust for real cursor pos */
   int rx;
   /* for the terminal window */
   int window_rows, window_cols;
+
+  /* where do I say it's End of buffer */
+  // bool final_row_newline;
 } editor;
+
+const char *progname;
+
+/* ================ append buffer ================ */
 
 struct abuf
 {
   int len;
   char *buf;
-};
+} ab = ABUF_INIT;
 
-/* append buffer */
+/* ================ FUNCTIONS ================ */
+
+/* ================ abuf related ================ */
 
 void
-abuf_append(struct abuf *ab, const char *s, int len)
+abuf_append(const char *s, int len)
 {
-  char *new_buf = realloc(ab->buf, ab->len + len);
+  char *new_buf = realloc(ab.buf, ab.len + len);
   if (new_buf == NULL)
 	return;
-  memcpy(&new_buf[ab->len], s, len);
-  ab->buf = new_buf;
-  ab->len += len;
+  memcpy(&new_buf[ab.len], s, len);
+  ab.buf = new_buf;
+  ab.len += len;
 }
 
 void
-abuf_destruct(struct abuf *ab)
+abuf_destruct(void)
 {
-  free(ab->buf);
+  free(ab.buf);
 }
 
-/* misc */
+/* ================ misc ================ */
 
-inline void
-editor_clear_screen(void);
-
-void die(const char *s)
+[[ noreturn ]]
+void
+die(const char *fmt, const char *s)
 {
-  editor_clear_screen();
-  perror(s);
+  const char *error = strerror(errno);
+  fprintf(stderr, fmt, progname, s, error);
   exit(EXIT_FAILURE);
 }
 
@@ -269,29 +292,34 @@ editor_clear_screen(void)
 	  write(STDOUT_FILENO, ERASE_DISPLAY,
 			ERASE_DISPLAY_SZ) == -1
 	  )
-	die("write");
+	die(DIE_ERROR_FMT, "write");
 }
 
-/* terminal control */
+/* ================ terminal control ================ */
 
 void
 disable_raw_mode(void)
 {
+  /* not gonna call "die" to exit in an atexit handler */
   write(STDOUT_FILENO, DISABLE_ALT_SCREEN DISABLE_MOUSE_TRACKING,
       DISABLE_ALT_SCREEN_SZ + DISABLE_MOUSE_TRACKING_SZ);
-  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &editor.orig_termios) == -1)
-	die("tcsetattr");
+  tcsetattr(STDIN_FILENO, TCSAFLUSH, &editor.orig_termios);
 }
 
 void
 enable_raw_mode(void)
 {
-  write(STDOUT_FILENO, ENABLE_ALT_SCREEN ENABLE_MOUSE_TRACKING,
-        ENABLE_ALT_SCREEN_SZ + ENABLE_MOUSE_TRACKING_SZ);
-  if (tcgetattr(STDIN_FILENO, &editor.orig_termios) == -1)
-	die("tcgetattr");
+  if (! isatty(STDIN_FILENO) || ! isatty(STDOUT_FILENO)
+      || tcgetattr(STDIN_FILENO, &editor.orig_termios) == -1)
+	die(DIE_MSG_FMT, "stdin and stdout must be terminal devices");
   atexit(disable_raw_mode);
-
+  
+  if (write(STDOUT_FILENO, ENABLE_ALT_SCREEN ENABLE_MOUSE_TRACKING,
+        ENABLE_ALT_SCREEN_SZ + ENABLE_MOUSE_TRACKING_SZ)
+      != ENABLE_ALT_SCREEN_SZ + ENABLE_MOUSE_TRACKING_SZ)
+    die(DIE_MSG_FMT, "internal write error");
+      
+  
   /* https://man7.org/linux/man-pages/man3/termios.3.html */
   struct termios raw = editor.orig_termios;
   raw.c_iflag &= ~(BRKINT | INPCK | PARMRK | INLCR | IGNCR | ISTRIP | ICRNL | IXON);
@@ -300,53 +328,69 @@ enable_raw_mode(void)
   raw.c_cflag &= ~(CSIZE | PARENB);
   raw.c_cflag |= (CS8);
 
-
-  // test getting rid of this ...
-  // don't block longer than 1/10 sec for reads
+  /* don't block longer than 1/10 sec for reads */
+  /* so we can detect escape sequences correctly */
   raw.c_cc[VMIN] = 0;
   raw.c_cc[VTIME] = 1;
   
   if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1)
-	die("tcgetattr");
+	die(DIE_ERROR_FMT, "failed setting terminal attributes");
+}
+
+
+int
+read_n(char *cp, int n)
+{
+  int nread;
+  nread = read(STDIN_FILENO, cp, n);
+  if (nread != -1)
+    return nread;
+  die(DIE_ERROR_FMT, "failed reading input");
 }
 
 int
 editor_read_key(void)
 {
-  int nread;
   char c;
   
-  while ( (nread = read(STDIN_FILENO, &c, 1)) != 1 )
-	if (nread == -1)
-	  die("read");
+  while ( read_n(&c, 1) != 1 )
+    ;
   
   if (c == '\x1b')
 	{
 	  char seq[3];
 
-	  // escape or meta (read timed out)
-	  // always <esc>[<something> unless one of our own ...
-	  if (read(STDIN_FILENO, &seq[0], 1) != 1)
-		return '\x1b';
+	  /* escape or meta (read timed out) */
+	  if (read_n(&seq[0], 1) != 1)
+        return '\x1b';
 
-	  // quick fix for M-v
-	  if (seq[0] == 'v')
-		return SCROLL_UP;
+      /* meta key bindings */
+      switch(seq[0])
+        {
+        case 'v':
+          return SCROLL_UP;
+        case '<':
+          return BEG_OF_BUF;
+        case '>':
+          return END_OF_BUF;
+        }
 	  
-	  if (read(STDIN_FILENO, &seq[1], 1) != 1)
-		return '\x1b';
+	  if (read_n(&seq[1], 1) != 1)
+        return '\x1b';
+
 
 	  if (seq[0] == '[')
 		{
 		  if (seq[1] >= '0' && seq[1] <= '9')
 			{
-			  if (read(STDIN_FILENO, &seq[2], 1) != 1)
-				return '\x1b';
+			  if (read_n(&seq[2], 1) != 1)
+                return '\x1b';
+              
 			  if (seq[2] == '~')
 				switch (seq[1])
 				  {
-					// page up and down keys
-					// caught on MacOS Terminal.app (fn+<keyup/down>)
+					/* page up and down keys */
+					/* caught on MacOS Terminal.app (fn+<keyup/down>) */
 				  case '5':
 					return SCROLL_UP;
 				  case '6':
@@ -362,9 +406,10 @@ editor_read_key(void)
 				  }
 			}
 		  else
+            /* ABCD -> arrow keys */
+            /* H F -> possible HOME/END */
 			switch (seq[1])
 			  {
-				// arrow keys
 			  case 'A':
 				return PREV_LINE;
 			  case 'B':
@@ -373,16 +418,15 @@ editor_read_key(void)
 				return FORWARD_CHAR;
 			  case 'D':
 				return BACKWARD_CHAR;
-                // possible page up and down keys
 			  case 'H':
 				return BEG_OF_BUF;
 			  case 'F':
 				return END_OF_BUF;
               case 'M':
                 {
-                  // scrolling
+                  /* scrolling with term mode 1000 */
                   char scroll[3];
-                  if (read(STDIN_FILENO, scroll, 3) != 3)
+                  if (read_n(scroll, 3) != 3)
                     return '\x1b';
                   if (scroll[0] == 96)
                     return PREV_LINE;
@@ -394,6 +438,7 @@ editor_read_key(void)
 			  }
 		}
 	  else if (seq[0] == '0')
+        /* possible HOME/END  */
 		switch (seq[1])
 		  {
 		  case 'H':
@@ -401,8 +446,8 @@ editor_read_key(void)
 		  case 'F':
 			return END_OF_BUF;
 		  }
-	  
-	  // escape or meta
+      
+	  /* otherwise they just hit escape */
 	  return '\x1b';
 	}
 
@@ -432,7 +477,7 @@ get_cursor_position(int *rows, int *cols)
 	}
   
   if (ret == -1)
-	die("read");
+	die(DIE_ERROR_FMT, "read");
 
   buf[i] = '\0';
 
@@ -442,6 +487,7 @@ get_cursor_position(int *rows, int *cols)
 
   return 0;
 }
+
 int
 get_window_size(int *rows, int *cols)
 {
@@ -452,7 +498,7 @@ get_window_size(int *rows, int *cols)
 	  ws.ws_col == 0
 	  )
 	{
-	  // backup method
+	  /* backup method */
 	  if (
 		  write(STDOUT_FILENO, MV_CURSOR_BOT_RIGHT,
 				MV_CURSOR_BOT_RIGHT_SZ) != 12
@@ -468,7 +514,7 @@ get_window_size(int *rows, int *cols)
 	}
 }
 
-/* row ops */
+/* ================ row ops ================ */
 
 int
 editor_row_cx_to_rx(struct editor_row *row, int cx)
@@ -484,7 +530,7 @@ editor_row_cx_to_rx(struct editor_row *row, int cx)
 void
 editor_update_row(struct editor_row *row)
 {
-  // specially render tabs
+  /* specially render tabs */
   int tabs = 0;
   for (int i = 0; i < row->size; i++)
     if (row->chars[i] == '\t')
@@ -518,13 +564,13 @@ editor_append_row(char *unterminated_s, size_t len)
 							  sizeof *editor.row
 							  * (editor.num_rows + 1));
   if (editor.row == NULL)
-	die("realloc");
+	die(DIE_ERROR_FMT, "realloc");
   
   int new_row = editor.num_rows;
   editor.row[new_row].size = len;
   editor.row[new_row].chars = malloc(len + 1);
   if (editor.row[new_row].chars == NULL)
-	die("malloc");
+	die(DIE_ERROR_FMT, "malloc");
   
   memcpy(editor.row[new_row].chars, unterminated_s, len);
   editor.row[new_row].chars[len] = '\0';
@@ -536,7 +582,7 @@ editor_append_row(char *unterminated_s, size_t len)
   editor.num_rows++;
 }
 
-/* file i/o */
+/* ================ file i/o ================ */
 
 // maybe add a simple UTF-8 check ... do not support :)
 // and make POSIXly
@@ -547,7 +593,7 @@ editor_open(char *filename)
   editor.filename = strdup(filename);
   FILE *fp = fopen(filename, "r");
   if (!fp)
-	die("fopen");
+	die(DIE_ERROR_FMT, "fopen");
   
   char *line = NULL;
   size_t linecap = 0;
@@ -565,15 +611,25 @@ editor_open(char *filename)
 	  editor_append_row(line, linelen);
 	}
   if (line == NULL)
-	die("getline");
+	die(DIE_ERROR_FMT, "getline");
   free(line);
   fclose(fp);
 }
 	  
-/* input */
+/* ================ input ================ */
 
 void
-editor_set_status_msg(const char *, ...);
+editor_set_status_msg(const char *fmt, ...)
+{
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(editor.status_msg,
+            sizeof(editor.status_msg),
+            fmt,
+            ap);
+  va_end(ap);
+  editor.status_msg_time = time(NULL);
+}
 
 void
 editor_move_cursor(int c)
@@ -706,7 +762,7 @@ editor_process_keystroke(void)
 	}
 }
 
-/* output */
+/* ================ output ================ */
 
 void
 editor_scroll(void)
@@ -734,7 +790,7 @@ editor_scroll(void)
 	  
 
 void
-editor_draw_rows(struct abuf *ab)
+editor_draw_rows(void)
 {
   for (int j = 0; j < editor.window_rows; j++)
 	{
@@ -744,7 +800,7 @@ editor_draw_rows(struct abuf *ab)
 	  if (filerow >= editor.num_rows)
 		{
 		  // no welcome message if displaying content
-		  if (editor.num_rows == 0 && j == editor.window_rows / 3)
+		  if (editor.num_rows == 0 && j == editor.window_rows / 2 - editor.window_rows / 8)
 			{
 			  char welcome[80];
 			  int welcomelen = snprintf(welcome, sizeof(welcome),
@@ -753,17 +809,10 @@ editor_draw_rows(struct abuf *ab)
 			  if (welcomelen > editor.window_cols)
 				welcomelen = editor.window_cols;
 			  int padding = (editor.window_cols - welcomelen) / 2;
-			  if (padding)
-				{
-				  abuf_append(ab, "~", 1);
-				  padding--;
-				}
 			  while (padding--)
-				abuf_append(ab, " ", 1);
-			  abuf_append(ab, welcome, welcomelen);
+				abuf_append(" ", 1);
+			  abuf_append(welcome, welcomelen);
 			}
-		  else
-			abuf_append(ab, "~", 1);
 		}
 	  else
 		{
@@ -775,17 +824,17 @@ editor_draw_rows(struct abuf *ab)
 			len = 0;
 		  else if (len > editor.window_cols)
 			len = editor.window_cols;
-		  abuf_append(ab, &editor.row[filerow].render[editor.col_offset], len);
+		  abuf_append(&editor.row[filerow].render[editor.col_offset], len);
 		}
 	  
-      abuf_append(ab, EOL, EOL_SZ);
+      abuf_append(EOL, EOL_SZ);
 	}
 }
 
 void
-editor_draw_status_bar(struct abuf *ab)
+editor_draw_status_bar(void)
 {
-  abuf_append(ab, START_INVERT_TEXT, START_INVERT_TEXT_SZ);
+  abuf_append(START_INVERT_TEXT, START_INVERT_TEXT_SZ);
   char status[80];
   int len = snprintf(status, sizeof(status), " -:**-  %.20s -- line %d/%d",
                      editor.filename ? editor.filename : "*no-file*",
@@ -794,37 +843,38 @@ editor_draw_status_bar(struct abuf *ab)
                      );
   if (len > editor.window_cols)
     len = editor.window_cols;
-  abuf_append(ab, status, len);
+  abuf_append(status, len);
   for (; len < editor.window_cols; len++)
-    abuf_append(ab, " ", 1);
-  abuf_append(ab, END_INVERT_TEXT, END_INVERT_TEXT_SZ);
-  abuf_append(ab, EOL, EOL_SZ); /* make room for status msg */
+    abuf_append(" ", 1);
+  abuf_append(END_INVERT_TEXT, END_INVERT_TEXT_SZ);
+  abuf_append(EOL, EOL_SZ); /* make room for status msg */
 }
 
 void
-editor_draw_msg_bar(struct abuf *ab)
+editor_draw_msg_bar(void)
 {
   int msg_len = strlen(editor.status_msg);
   if (msg_len > editor.window_cols)
     msg_len = editor.window_cols;
   if (msg_len && time(NULL) - editor.status_msg_time < 3)
-    abuf_append(ab, editor.status_msg, msg_len);
+    abuf_append(editor.status_msg, msg_len);
 }
   
 void
 editor_refresh_screen(void)
 {
   editor_scroll();
-  
-  struct abuf ab = ABUF_INIT;
 
-  abuf_append(&ab, HIDE_CURSOR, HIDE_CURSOR_SZ);
-  abuf_append(&ab, MV_CURSOR_TOP_LEFT, MV_CURSOR_TOP_LEFT_SZ);  
-  abuf_append(&ab, ERASE_DISPLAY, ERASE_DISPLAY_SZ);
+  ab.buf = NULL;
+  ab.len = 0;
   
-  editor_draw_rows(&ab);
-  editor_draw_status_bar(&ab);
-  editor_draw_msg_bar(&ab);
+  abuf_append(HIDE_CURSOR, HIDE_CURSOR_SZ);
+  abuf_append(MV_CURSOR_TOP_LEFT, MV_CURSOR_TOP_LEFT_SZ);  
+  abuf_append(ERASE_DISPLAY, ERASE_DISPLAY_SZ);
+  
+  editor_draw_rows();
+  editor_draw_status_bar();
+  editor_draw_msg_bar();
   
   char buf[32];
 
@@ -833,38 +883,41 @@ editor_refresh_screen(void)
   int cursor_pos_y = editor.cy - editor.row_offset + 1;
   int cursor_pos_x = editor.rx - editor.col_offset + 1;
   snprintf(buf, sizeof(buf), MV_CURSOR_COORD_ARGS_YX, cursor_pos_y, cursor_pos_x);
-  abuf_append(&ab, buf, strlen(buf));
+  abuf_append(buf, strlen(buf));
 		   
-  abuf_append(&ab, UNHIDE_CURSOR, UNHIDE_CURSOR_SZ);
+  abuf_append(UNHIDE_CURSOR, UNHIDE_CURSOR_SZ);
 
   write(STDOUT_FILENO, ab.buf, ab.len);
-  abuf_destruct(&ab);
-}
-
-void
-editor_set_status_msg(const char *fmt, ...)
-{
-  va_list ap;
-  va_start(ap, fmt);
-  vsnprintf(editor.status_msg,
-            sizeof(editor.status_msg),
-            fmt,
-            ap);
-  va_end(ap);
-  editor.status_msg_time = time(NULL);
+  WRITE_LOG_PTR("about to call abuf destruct in editor refresh screen", ab.buf);
+  abuf_destruct();
 }
 
 /* initialization */
 
 void
+update_window_size(void)
+{
+  if (get_window_size(&editor.window_rows,
+                      &editor.window_cols) == -1)
+    die(DIE_ERROR_FMT, "get_window_size");
+  /* status bar && msg bar */
+  editor.window_rows -= 2;
+}
+                      
+void handle_sigwinch(int sig [[maybe_unused]])
+{
+  update_window_size();
+  editor_refresh_screen();
+}
+
+void
 init_editor(void)
 {
-  /* compiler can optimize away possibly,
-     since global struct 0-initialized */
-  /* terminal cursor pos starts at 1 index btw */
+  /* 0-indexed within text file */
   editor.cx = editor.cy = 0;
+  /* within the rendered characters */
   editor.rx = 0;
-  
+
   editor.num_rows = 0;
   editor.row_offset = 0;
   editor.col_offset = 0;
@@ -873,36 +926,31 @@ init_editor(void)
   editor.filename = NULL;
   editor.status_msg[0] = '\0';
   editor.status_msg_time = 0;
-  
-  if (get_window_size(&editor.window_rows,
-					  &editor.window_cols) == -1)
-	die("get_window_size");
 
-  /* make room for status msg and bar */
-  editor.window_rows -= 2;
-}	  
+  //  editor.final_row_newline = false;
+  
+  update_window_size();
+  signal(SIGWINCH, handle_sigwinch);
+}
 
 int
 main(int argc, char *argv[])
 {
   INIT_LOG("le.log");
-  // add tty check
+  progname = argv[0];
   enable_raw_mode();
   init_editor();
 
-  if (argc >= 2)
+  if (argc == 2)
 	editor_open(argv[1]);
-
-  WRITE_LOG_INT("Window rows", editor.window_rows);
-  WRITE_LOG_INT("Num row buffers", (int) editor.num_rows);
+  else if (argc != 1)
+    die(DIE_MSG_FMT, "bad usage");
 
   editor_set_status_msg("C-x C-c to quit");
 
   while (1)
 	{
 	  editor_refresh_screen();
-	  WRITE_LOG_INT("editor.cy", editor.cy);
-	  WRITE_LOG_INT("editor.row_offset", (int) editor.row_offset);
 	  editor_process_keystroke();
 	}
 
